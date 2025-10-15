@@ -10,7 +10,6 @@
 
 from dataclasses import dataclass
 import itertools
-import math
 import typing as tp
 import warnings
 
@@ -54,8 +53,11 @@ def get_extra_padding_for_conv1d(
 ) -> int:
     """See `pad_for_conv1d`."""
     length = x.shape[-1]
-    n_frames = (length - kernel_size + padding_total) / stride + 1
-    ideal_length = (math.ceil(n_frames) - 1) * stride + (kernel_size - padding_total)
+    # Avoiding floating math and math.ceil for efficiency
+    # (length - kernel_size + padding_total) may be negative, but // works as desired
+    numerator = length - kernel_size + padding_total
+    n_frames = (numerator + stride - 1) // stride + 1
+    ideal_length = (n_frames - 1) * stride + (kernel_size - padding_total)
     return ideal_length - length
 
 
@@ -73,6 +75,9 @@ def pad_for_conv1d(
             1 2 3 4         # once you removed padding, we are missing one time step !
     """
     extra_padding = get_extra_padding_for_conv1d(x, kernel_size, stride, padding_total)
+    # Avoid calculation if no extra padding is necessary
+    if extra_padding <= 0:
+        return x
     return F.pad(x, (0, extra_padding))
 
 

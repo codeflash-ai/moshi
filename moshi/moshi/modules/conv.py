@@ -104,8 +104,12 @@ def pad1d(
 def unpad1d(x: torch.Tensor, paddings: tp.Tuple[int, int]):
     """Remove padding from x, handling properly zero padding. Only for 1d!"""
     padding_left, padding_right = paddings
+    # Early exit for zero paddings - avoids slicing overhead
+    if padding_left == 0 and padding_right == 0:
+        return x
     assert padding_left >= 0 and padding_right >= 0, (padding_left, padding_right)
     assert (padding_left + padding_right) <= x.shape[-1]
+    # Calculate end index once outside slice for efficiency
     end = x.shape[-1] - padding_right
     return x[..., padding_left:end]
 

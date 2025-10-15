@@ -488,7 +488,18 @@ class StreamingMultiheadAttention(StreamingModule[_MHAState]):
         assert isinstance(in_proj, nn.Linear)
         dim = in_proj.weight.shape[0] // 3
         kv = nn.functional.linear(key, in_proj.weight[dim:])
-        k, v = rearrange(kv, "b t (p h d) -> p b h t d", p=2, h=self.num_heads)
+
+        # Optimize rearrange: replace einops.rearrange with efficient tensor ops.
+        # Rearrangement pattern: "b t (p h d) -> p b h t d", p=2, h=self.num_heads
+        # kv shape: (b, t, 2 * h * d)
+        b, t, two_hd = kv.shape
+        h = self.num_heads
+        d = two_hd // (2 * h)
+        # kv -> (b, t, 2, h, d)
+        kv = kv.view(b, t, 2, h, d)
+        # (b, t, 2, h, d) -> (2, b, h, t, d)
+        kv = kv.permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]
         return k, v
 
     def update_streaming_cross_attention_src(

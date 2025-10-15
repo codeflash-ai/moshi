@@ -1,11 +1,16 @@
 # Copyright (c) Kyutai, all rights reserved.
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
-"""Utilities for the command line client, in particular for handling interactions with the terminal.
-"""
+"""Utilities for the command line client, in particular for handling interactions with the terminal."""
 
 from dataclasses import dataclass
 import sys
+
+_WARN_PREFIX = "\033[1;31m[Warn]\033[0m"
+
+_INFO_PREFIX = "\033[1;34m[Info]\033[0m"
+
+_ERR_PREFIX = "\033[1;31m[Err ]\033[0m"
 
 
 def colorize(text, color):
@@ -16,11 +21,11 @@ def colorize(text, color):
 
 def make_log(level: str, msg: str) -> str:
     if level == "warning":
-        prefix = colorize("[Warn]", "1;31")
+        prefix = _WARN_PREFIX
     elif level == "info":
-        prefix = colorize("[Info]", "1;34")
+        prefix = _INFO_PREFIX
     elif level == "error":
-        prefix = colorize("[Err ]", "1;31")
+        prefix = _ERR_PREFIX
     else:
         raise ValueError(f"Unknown level {level}")
     return prefix + " " + msg

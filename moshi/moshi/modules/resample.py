@@ -57,11 +57,16 @@ class ConvDownsample1d(nn.Module):
 
     def forward(self, x: torch.Tensor):
         batch_size = len(x)
+        # Avoid expensive string-based rearrange by directly using view/reshape/permutation when not learnt
         if not self.learnt:
-            x = rearrange(x, "b c t -> (b c) () t")
+            # x: (b, c, t) -> (b * c, 1, t) without copying data if possible
+            b, c, t = x.shape
+            x = x.contiguous().view(b * c, 1, t)
         y = self.conv(x)
         if not self.learnt:
-            y = rearrange(y, "(b c) () t -> b c t", b=batch_size)
+            # y: (b * c, 1, t') -> (b, c, t') efficiently
+            new_t = y.shape[-1]
+            y = y.contiguous().view(batch_size, -1, new_t)
         return y
 
 

@@ -8,6 +8,21 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..utils.compile import torch_compile_lazy, no_compile
+from typing import Callable, Union
+
+# Precompute activation functions and objects to avoid attribute lookups and repeated object construction.
+_ACTIVATION_FUNCS: dict[str, Union[Callable, torch.nn.Identity]] = {
+    "sigmoid": torch.sigmoid,
+    "tanh": torch.tanh,
+    "relu": torch.relu,
+    "leaky_relu": torch.nn.functional.leaky_relu,
+    "elu": torch.nn.functional.elu,
+    "gelu": torch.nn.functional.gelu,
+    "silu": torch.nn.functional.silu,
+    "mish": torch.nn.functional.mish,
+    "softsign": torch.nn.functional.softsign,
+    "identity": torch.nn.Identity(),  # Singleton instance, reused for efficiency
+}
 
 
 @torch_compile_lazy
@@ -23,10 +38,7 @@ def gating_forward_kernel(
 
 
 def gating_forward_generic(
-    linear_in: nn.Module,
-    linear_out: nn.Module,
-    activation,
-    x: torch.Tensor
+    linear_in: nn.Module, linear_out: nn.Module, activation, x: torch.Tensor
 ):
     x = linear_in(x)
     B, T, _ = x.shape
@@ -47,7 +59,14 @@ class ActivationGating(nn.Module):
 
     _fsdp_final = True
 
-    def __init__(self, dim: int, dim_feedforward: int, activation, quantized: bool = False, **factory_kwargs):
+    def __init__(
+        self,
+        dim: int,
+        dim_feedforward: int,
+        activation,
+        quantized: bool = False,
+        **factory_kwargs,
+    ):
         super().__init__()
         # We should have 8 d^2 param, instead we will have
         # 2 * h * d + h * d = 3 h * d = 8 d^2
@@ -75,27 +94,19 @@ class ActivationGating(nn.Module):
                 )
         else:
             return gating_forward_generic(
-                self.linear_in,
-                self.linear_out,
-                self.activation,
-                x
+                self.linear_in, self.linear_out, self.activation, x
             )
 
 
 def _get_activation(name: str):
-    if name in ["sigmoid", "tanh", "relu"]:
-        return getattr(torch, name)
-    elif name in ["leaky_relu", "elu", "gelu", "silu", "mish", "softsign"]:
-        return getattr(torch.nn.functional, name)
-    elif name == "identity":
-        return torch.nn.Identity()
-    else:
+    try:
+        return _ACTIVATION_FUNCS[name]
+    except KeyError:
         raise ValueError(f"Unknown activation {name}")
 
 
 def _make_gating(
-    name: str, dim: int, dim_feedforward: int,
-    **factory_kwargs
+    name: str, dim: int, dim_feedforward: int, **factory_kwargs
 ) -> nn.Module:
     return ActivationGating(
         dim, dim_feedforward, _get_activation(name), **factory_kwargs

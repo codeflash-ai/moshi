@@ -15,7 +15,9 @@ from .base import _BaseTextConditioner, ConditionType
 logger = logging.getLogger(__name__)
 
 
-def length_to_mask(lengths: torch.Tensor, max_len: tp.Optional[int] = None) -> torch.Tensor:
+def length_to_mask(
+    lengths: torch.Tensor, max_len: tp.Optional[int] = None
+) -> torch.Tensor:
     """Utility function to convert a tensor of sequence lengths to a mask (useful when working on padded sequences).
     For example: [3, 5] => [[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]]
 
@@ -26,9 +28,19 @@ def length_to_mask(lengths: torch.Tensor, max_len: tp.Optional[int] = None) -> t
         torch.Tensor: mask with 0s where there is pad tokens else 1s
     """
     assert len(lengths.shape) == 1, "Length shape should be 1 dimensional."
-    final_length = lengths.max().item() if not max_len else max_len
-    final_length = max(final_length, 1)  # if all seqs are of len zero we don't want a zero-size tensor
-    return torch.arange(final_length, device=lengths.device)[None, :] < lengths[:, None]
+    if max_len is None:
+        final_length = lengths.max().item()
+    else:
+        final_length = max_len
+    final_length = max(
+        final_length, 1
+    )  # if all seqs are of len zero we don't want a zero-size tensor
+
+    # Avoid creating intermediate range tensor on CPU if input is CUDA (torch.arange is cheap but placement matters)
+    arange = torch.arange(final_length, device=lengths.device)
+    # Use broadcasting; force the output dtype to be bool so it's a binary mask (saves memory and can be more efficient in downstream ops)
+    mask = arange < lengths.unsqueeze(1)
+    return mask
 
 
 def hash_trick(word: str, vocab_size: int) -> int:
@@ -45,17 +57,16 @@ def hash_trick(word: str, vocab_size: int) -> int:
 
 
 class TokenizedText(tp.NamedTuple):
-    tokens: torch.Tensor   # should be long tensor.
-    mask: torch.Tensor     # should be bool tensor.
+    tokens: torch.Tensor  # should be long tensor.
+    mask: torch.Tensor  # should be bool tensor.
 
 
-class TextConditioner(_BaseTextConditioner[TokenizedText]):
-    ...
+class TextConditioner(_BaseTextConditioner[TokenizedText]): ...
 
 
 class Tokenizer:
-    """Base tokenizer implementation
-    """
+    """Base tokenizer implementation"""
+
     def __call__(self, texts: tp.List[tp.Optional[str]]) -> TokenizedText:
         raise NotImplementedError()
 
@@ -73,13 +84,16 @@ class NoopTokenizer(Tokenizer):
     When all possible values are known, one can use `possible_values` to provide the list
     of possible tokens. If a token doesn't exist, `pad_idx` will be used instead.
     """
+
     def __init__(self, n_bins: int, possible_values: list[str] | None = None):
         self.n_bins = n_bins
         self.pad_idx = n_bins
         if possible_values is None:
             self.possible_values = None
         else:
-            self.possible_values = {value: idx for idx, value in enumerate(possible_values)}
+            self.possible_values = {
+                value: idx for idx, value in enumerate(possible_values)
+            }
             assert n_bins >= len(possible_values)
 
     def __call__(self, texts: tp.List[tp.Optional[str]]) -> TokenizedText:
@@ -94,7 +108,9 @@ class NoopTokenizer(Tokenizer):
                     output.append(hash_trick(text, self.n_bins))
                 else:
                     if text not in self.possible_values:
-                        raise ValueError(f"'{text}' is not in possible_values {self.possible_values}")
+                        raise ValueError(
+                            f"'{text}' is not in possible_values {self.possible_values}"
+                        )
                     output.append(self.possible_values[text])
                 lengths.append(1)
 
@@ -112,12 +128,19 @@ class LUTConditioner(TextConditioner):
         output_dim (int): Output dim of the conditioner.
         pad_idx (int, optional): Index for padding token. Defaults to 0.
     """
-    def __init__(self, n_bins: int, tokenizer: str, possible_values: list[str] | None = None,
-                 init_scale: float = 1., **kwargs):
+
+    def __init__(
+        self,
+        n_bins: int,
+        tokenizer: str,
+        possible_values: list[str] | None = None,
+        init_scale: float = 1.0,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.embed = nn.Embedding(n_bins + 1, self.dim)  # n_bins + 1 for padding.
         self.embed.weight.data *= init_scale
-        if tokenizer == 'noop':
+        if tokenizer == "noop":
             self.tokenizer = NoopTokenizer(n_bins, possible_values)
         else:
             raise ValueError(f"unrecognized tokenizer `{tokenizer}`.")

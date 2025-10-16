@@ -67,14 +67,17 @@ def _average_tensors(tensors: tp.Sequence[torch.Tensor]) -> None:
     handles = []
     for tensor in tensors:
         handle = distributed.all_reduce(
-            tensor.data, op=distributed.ReduceOp.SUM, async_op=True)
+            tensor.data, op=distributed.ReduceOp.SUM, async_op=True
+        )
         handles.append(handle)
     for tensor, handle in zip(tensors, handles):
         handle.wait()
         tensor.data /= world_size
 
 
-def _run_kmeans(samples: torch.Tensor, num_clusters: int, num_iters: int = 50) -> tp.Tuple[torch.Tensor, torch.Tensor]:
+def _run_kmeans(
+    samples: torch.Tensor, num_clusters: int, num_iters: int = 50
+) -> tp.Tuple[torch.Tensor, torch.Tensor]:
     # Kmeans algorithm used to initialize the codebooks.
     dim = samples.shape[-1]
     means = _sample_vectors(samples, num_clusters)
@@ -188,7 +191,8 @@ class EuclideanCodebook(nn.Module):
     @property
     def initialized(self) -> bool:
         """Cached version of self._initialized,
-        This assumes that once the module is initialized, it will never go back to the uninitialized state."""
+        This assumes that once the module is initialized, it will never go back to the uninitialized state.
+        """
         if not self._cached_initialized:
             self._cached_initialized = bool(self._initialized.item())
         return self._cached_initialized
@@ -207,7 +211,9 @@ class EuclideanCodebook(nn.Module):
                 other_shapes: tp.List[torch.Size] = [None] * distributed.get_world_size()  # type: ignore
                 distributed.gather_object(data.shape, other_shapes)
                 other_data: tp.List[torch.Tensor] = [
-                    torch.empty(shape, device=data.device, dtype=data.dtype) for shape in other_shapes]
+                    torch.empty(shape, device=data.device, dtype=data.dtype)
+                    for shape in other_shapes
+                ]
                 distributed.gather(data, other_data)
                 data = torch.cat(other_data, dim=0)
             else:
@@ -250,7 +256,9 @@ class EuclideanCodebook(nn.Module):
             return zero_scalar(batch_samples.device)
         # we don't check every iteration to avoid having too many sync points.
         self._next_unused_check = self.check_unused_every
-        threshold_cluster_usage = self.threshold_usage_ratio * self.cluster_usage.sum() / self.codebook_size
+        threshold_cluster_usage = (
+            self.threshold_usage_ratio * self.cluster_usage.sum() / self.codebook_size
+        )
         expired_codes = self.cluster_usage < threshold_cluster_usage
 
         assert batch_samples.dim() == 2
@@ -318,21 +326,24 @@ class EuclideanCodebook(nn.Module):
             # We do the expiry of the unused codes at this point as buffers are in sync
             # and all the workers will take the same decision.
             expired = self._check_expired_codes(x)
-            metrics['rvq_expired'] = expired
+            metrics["rvq_expired"] = expired
             cluster_usage = torch.zeros_like(self.cluster_usage)
             cluster_usage.scatter_add_(
-                0, flat_codes, torch.ones_like(flat_codes, dtype=cluster_usage.dtype))
+                0, flat_codes, torch.ones_like(flat_codes, dtype=cluster_usage.dtype)
+            )
             _ema_inplace(self.cluster_usage, cluster_usage, self.decay)
 
             if self.initialized:
                 # We report the entropy normalized by that of the uniform distribution,
                 # This means the codebooks are optimally used when entropy=1.
-                metrics['rvq_entropy'] = _compute_entropy(self.cluster_usage) / math.log(self.codebook_size)
+                metrics["rvq_entropy"] = _compute_entropy(
+                    self.cluster_usage
+                ) / math.log(self.codebook_size)
 
             embedding_sum = torch.zeros_like(self.embedding_sum)
             embedding_sum.scatter_add_(0, repeat(flat_codes, "n -> n d", d=self.dim), x)
             _ema_inplace(self.embedding_sum, embedding_sum, self.decay)
-            self.register_buffer('_embedding', None)
+            self.register_buffer("_embedding", None)
 
         return _CodebookForwardResult(quantized, codes, metrics)
 
@@ -401,7 +412,13 @@ class VectorQuantization(nn.Module):
         return x
 
     def _rearrange_output(self, quantized):
-        quantized = rearrange(quantized, "b n d -> b d n")
+        # Optimized the rearrangement using torch.permute for better performance
+        # Assumes quantized is a torch.Tensor of shape (b, n, d)
+        # Equivalent to einops rearrange(quantized, "b n d -> b d n")
+        if isinstance(quantized, torch.Tensor) and quantized.ndim == 3:
+            quantized = quantized.permute(0, 2, 1)
+        else:
+            quantized = rearrange(quantized, "b n d -> b d n")
         return quantized
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -498,7 +515,10 @@ class ResidualVectorQuantization(nn.Module):
             to_average = []
             for layer in self.layers:
                 assert isinstance(layer, VectorQuantization)
-                to_average += [layer._codebook.cluster_usage, layer._codebook.embedding_sum]
+                to_average += [
+                    layer._codebook.cluster_usage,
+                    layer._codebook.embedding_sum,
+                ]
                 _average_tensors(to_average)
 
         out_losses, out_codes = map(torch.stack, (all_losses, all_codes))

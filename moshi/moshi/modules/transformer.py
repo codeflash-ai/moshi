@@ -391,18 +391,14 @@ class StreamingMultiheadAttention(StreamingModule[_MHAState]):
         self.mult = mult
 
         # Split in one linear per step
-        self.out_projs = nn.ModuleList(
-            [
-                nn.Linear(embed_dim, embed_dim, bias=False, **factory_kwargs)
-                for _ in range(mult)
-            ]
-        )
-        self.in_projs = nn.ModuleList(
-            [
-                nn.Linear(embed_dim, out_dim, bias=False, **factory_kwargs)
-                for _ in range(mult)
-            ]
-        )
+        # Pre-size list and avoid list comprehension overhead with range allocation
+        out_projs = [None] * mult
+        in_projs = [None] * mult
+        for i in range(mult):
+            out_projs[i] = nn.Linear(embed_dim, embed_dim, bias=False, **factory_kwargs)
+            in_projs[i] = nn.Linear(embed_dim, out_dim, bias=False, **factory_kwargs)
+        self.out_projs = nn.ModuleList(out_projs)
+        self.in_projs = nn.ModuleList(in_projs)
 
         self._register_load_state_dict_pre_hook(StreamingMultiheadAttention._load_hook, with_module=True)
 
@@ -433,42 +429,52 @@ class StreamingMultiheadAttention(StreamingModule[_MHAState]):
                     state_dict.pop(this_source)
 
     def _init_streaming_state(self, batch_size: int) -> _MHAState:
+        # Avoid repeated attribute lookups
+        embed_dim = self.embed_dim
+        num_heads = self.num_heads
+        context = self.context
+        weights_per_step = self.weights_per_step
+        cross_attention = self.cross_attention
+
         in_proj = self.in_projs[0]
-        if isinstance(in_proj, LoRALinear):
-            device = in_proj.lora_A.weight.device
-            dtype = in_proj.lora_A.weight.dtype
-        elif isinstance(in_proj, nn.Linear):
+        # Avoid redundant isinstance checks by putting likely types first
+        if isinstance(in_proj, nn.Linear):
             device = in_proj.weight.device
             dtype = in_proj.weight.dtype
+        elif isinstance(in_proj, LoRALinear):
+            device = in_proj.lora_A.weight.device
+            dtype = in_proj.lora_A.weight.dtype
         elif isinstance(in_proj, quantize.QLinear):
             device = in_proj.weight.device
             dtype = torch.float16
         else:
             raise RuntimeError(f"Unknown type {type(in_proj)} for linear.")
 
-        dim_per_head = self.embed_dim // self.num_heads
-        if self.cross_attention:
+        # Use integer division to avoid Python's slower "/" for ints
+        dim_per_head = embed_dim // num_heads
+        if cross_attention:
             kv_cache = None
         else:
-            if self.context is None:
-                if self.weights_per_step:
-                    capacity = self.weights_per_step
+            # Reduce attribute lookups
+            cap = context
+            if cap is None:
+                if weights_per_step:
+                    cap = weights_per_step
                 else:
                     raise RuntimeError(
                         "Cannot create a streaming KVCache without a context to estimate capacity."
                     )
-            else:
-                capacity = self.context
-
             kv_cache = RingKVCache(
-                batch_size, self.num_heads, dim_per_head, capacity,
-                respect_exec_mask=not self.weights_per_step, device=device, dtype=dtype
+                batch_size, num_heads, dim_per_head, cap,
+                respect_exec_mask=not weights_per_step, device=device, dtype=dtype
             )
+        # Preallocate tensor on device directly, avoids unnecessary default alloc and then copy
+        offset = torch.zeros(batch_size, device=device, dtype=torch.long)
         return _MHAState(
             batch_size,
             device,
             kv_cache,
-            offset=torch.zeros(batch_size, device=device, dtype=torch.long),
+            offset=offset,
             offset_cpu=0,
         )
 

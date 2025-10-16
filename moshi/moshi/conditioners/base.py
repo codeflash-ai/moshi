@@ -215,10 +215,13 @@ def dropout_all_conditions(attributes: tp.Sequence[ConditionAttributes]) -> list
         list[ConditionAttributes]: Same with all conditions dropped.
     """
     attributes = [attribute.copy() for attribute in attributes]
-    for condition_type in ConditionAttributes.condition_types():
-        for attribute in attributes:
-            for condition in getattr(attribute, condition_type):
-                dropout_condition_(attribute, condition_type, condition)
+    for attribute in attributes:
+        tensor = attribute.tensor
+        for key in tensor:
+            tensor[key] = dropout_tensor(tensor[key])
+        text = attribute.text
+        for key in text:
+            text[key] = None
     return attributes
 
 
